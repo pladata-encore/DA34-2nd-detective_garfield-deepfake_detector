@@ -10,13 +10,23 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
 import altair as alt
 import plotly.express as px 
+import cv2
+import tempfile
+from typing import Tuple, Union
+import math
+from tensorflow.keras.models import load_model
+import tensorflow.keras as keras
+import numpy as np
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 #csv file load
-model1 = pd.read_csv('C:/ChatGPT/0422_pro2_deepfake/history1.csv', index_col=0)
-model2 = pd.read_csv('C:/ChatGPT/0422_pro2_deepfake/history2.csv', index_col=0)
-model3 = pd.read_csv('C:/ChatGPT/0422_pro2_deepfake/history3.csv', index_col=0)
-model4 = pd.read_csv('C:/ChatGPT/0422_pro2_deepfake/history4.csv', index_col=0)
-model5 = pd.read_csv('C:/ChatGPT/0422_pro2_deepfake/history5.csv', index_col=0)
+model1 = pd.read_csv('history/history1.csv', index_col=0)
+model2 = pd.read_csv('history/history2.csv', index_col=0)
+model3 = pd.read_csv('history/history3.csv', index_col=0)
+model4 = pd.read_csv('history/history4.csv', index_col=0)
+model5 = pd.read_csv('history/history5.csv', index_col=0)
 
 
 #CSS클래스 정의
@@ -49,7 +59,108 @@ page_bg_img_first = f"""
     </style>
 """
 
+#얼굴 인식 사각형 사이즈 설정
+MARGIN = 20  # pixels
+ROW_SIZE = 25  # pixels
+FONT_SIZE = 5
+FONT_THICKNESS = 3
+TEXT_COLOR = (0, 255, 0)  # green
+TEXT_COLOR_1 = (0, 0, 255)  # red
 
+#얼굴에 사각형 그리기
+def _normalized_to_pixel_coordinates(
+    normalized_x: float, normalized_y: float, image_width: int,
+    image_height: int) -> Union[None, Tuple[int, int]]:
+  """Converts normalized value pair to pixel coordinates."""
+
+  # Checks if the float value is between 0 and 1.
+  def is_valid_normalized_value(value: float) -> bool:
+    return (value > 0 or math.isclose(0, value)) and (value < 1 or
+                                                      math.isclose(1, value))
+
+  if not (is_valid_normalized_value(normalized_x) and
+          is_valid_normalized_value(normalized_y)):
+    # TODO: Draw coordinates even if it's outside of the image bounds.
+    return None
+  x_px = min(math.floor(normalized_x * image_width), image_width - 1)
+  y_px = min(math.floor(normalized_y * image_height), image_height - 1)
+  return x_px, y_px
+
+def visualize(
+    image,
+    detection_result,
+    label 
+) -> np.ndarray:
+  """Draws bounding boxes and keypoints on the input image and return it.
+  Args:
+    image: The input RGB image.
+    detection_result: The list of all "Detection" entities to be visualize.
+  Returns:
+    Image with bounding boxes.
+  """
+  annotated_image = image.copy()
+  height, width, _ = image.shape
+
+  for detection in detection_result.detections:
+    # Draw bounding_box
+    bbox = detection.bounding_box
+    start_point = bbox.origin_x, bbox.origin_y
+    end_point = bbox.origin_x + bbox.width, bbox.origin_y + bbox.height
+    if label =='real': 
+      cv2.rectangle(annotated_image, start_point, end_point, TEXT_COLOR, 3)
+    elif label == 'fake':
+      cv2.rectangle(annotated_image, start_point, end_point, TEXT_COLOR_1, 3)
+
+    # Draw keypoints
+    for keypoint in detection.keypoints:
+      keypoint_px = _normalized_to_pixel_coordinates(keypoint.x, keypoint.y,
+                                                     width, height)
+      color, thickness, radius = (0, 255, 0), 2, 2
+      cv2.circle(annotated_image, keypoint_px, thickness, color, radius)
+
+    # Draw label and score
+    category = detection.categories[0]
+    category_name = category.category_name
+    category_name = '' if category_name is None else category_name
+    probability = round(category.score, 2)
+    result_text = category_name + ' (' + str(probability) + ')'
+    text_location = (MARGIN + bbox.origin_x,
+                     MARGIN + ROW_SIZE + bbox.origin_y)
+    if label =='real':
+       cv2.putText(annotated_image, label, text_location, cv2.FONT_HERSHEY_PLAIN,
+                FONT_SIZE, TEXT_COLOR, FONT_THICKNESS) 
+    elif label == 'fake':
+       cv2.putText(annotated_image, label, text_location, cv2.FONT_HERSHEY_PLAIN,
+                FONT_SIZE, TEXT_COLOR_1, FONT_THICKNESS)
+
+  return annotated_image
+
+#최종적인 fake와 real 출력
+def classify_data(label_list):
+    count_0 = label_list.count(0)
+    count_1 = label_list.count(1)
+    
+    if count_0 > count_1:
+        return "real"
+    elif count_1 > count_0:
+        return "fake"
+    else:
+        return "equal"
+    
+# 임시 변수 선언
+label_list = []
+
+
+# 마스크 착용 여부 레이블 및 색상 지정
+labels_dict = {1: 'fake', 0: 'real'}
+color_dict = {1: (0, 0, 255), 0: (0, 255, 0)}
+    
+# 모델 불러오기
+model = keras.models.load_model('model/crop3-034-0.0432.hdf5')
+# model = keras.models.load_model('model/model.tflite')
+base_options = python.BaseOptions(model_asset_path='model/detector.tflite')
+options = vision.FaceDetectorOptions(base_options=base_options)
+detector = vision.FaceDetector.create_from_options(options)
 
 def main():
     st.set_page_config(initial_sidebar_state="expanded")
@@ -183,30 +294,88 @@ def main():
                 st.pyplot(plt)
  
         with tab3:
+            st.header('VGG16 Model')
             st.subheader('History')
-            st.line_chart(pd.DataFrame(model1, columns=['loss', 'accuracy', 'val_loss', 'val_accuracy']))
+            st.image('img/loss.png')
             st.subheader('Confusion matrix')
-            conf_matrix = np.array([[1021, 0],
-                                    [0, 979]])
+            conf_matrix = np.array([[1783, 0],
+                                    [4, 1773]])
             plt.figure(figsize=(6, 6)) #그림size
             sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues", cbar=False, square=True)  #annot: 숫자 표시, fmt=d: 정수표현, cbar: 측면에 나타나는 colorbar, square: 행,열 크기비례
             plt.xlabel('Predicted')
             plt.ylabel('Actual')
             st.pyplot(plt)
-            st.subheader('Grad-CAM')
+            st.subheader('Occlusion Sensitivity')
             st.text('patch-size=20')
-            st.image('C:/ChatGPT/0422_pro2_deepfake/all_patchsize20.png', use_column_width = True)
+            st.image('img/all_patchsize20.png', use_column_width = True)
             st.text('patch-size=50')
-            st.image('C:/ChatGPT/0422_pro2_deepfake/crop_patchsize50.png', use_column_width = True)
+            st.image('img/crop_patchsize50.png', use_column_width = True)
             
 
 
     #[Model]Tab 설정 
     elif choice == "Detector":  #가연's back-end area 
         st.markdown(font_dc+'<div style="font-family: Pretendard-Regular; font-size: 40px; font-weight: 900; color: #04B8C4; line-height: 60px; letter-spacing: 2px">Deepfake Detector</div>', unsafe_allow_html=True)
-        st.text_input(' ')
-        st.file_uploader('🎞️ Upload your video 🎞️')
-    
+        
+        st.text_input('',   placeholder="🎞️ Upload your video 🎞️")
+        uploaded_file = st.file_uploader('', type=["mp4", "MOV"])
+        
+        # 업로드된 파일이 있을 경우 처리
+        if uploaded_file is not None:
+            # 임시 파일로 저장
+            with open("temp_video.mp4", "wb") as f:
+                f.write(uploaded_file.read())
+                
+            result = [0.0, 0.0]
+            result[0] = 0.0
+            
+            # 비디오 스트림 읽기
+            video_stream = cv2.VideoCapture("temp_video.mp4")
+            
+            tfile = tempfile.NamedTemporaryFile(delete=False) 
+            tfile.write(uploaded_file.read())
+            v_cap = cv2.VideoCapture(tfile.name)
+            frameST = st.empty()
+            
+            # 비디오 writer 객체 생성
+            fps = round(video_stream.get(cv2.CAP_PROP_FPS))
+            frame_width, frame_height = int(video_stream.get(cv2.CAP_PROP_FRAME_WIDTH)), int(video_stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            # 비디오 스트림이 열려 있는 동안 반복
+            while True:
+                #프레임 얼마인지 확인해서 , 
+                ret, img = video_stream.read()  # 프레임 읽기
+                if ret:
+                    # 이미지를 RGB 형식으로 변환
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img)
+                    results = detector.detect(mp_image)
+
+                    if(int(video_stream.get(1)) % fps == 0) :#or video_stream.get(1) == 1:
+            
+                        x = int(results.detections[0].bounding_box.origin_x)
+                        y = int(results.detections[0].bounding_box.origin_y)
+                        w = int(results.detections[0].bounding_box.width)
+                        h = int(results.detections[0].bounding_box.height)
+
+                        roi = img[y:y+h, x:x+w]
+                        resized_roi = cv2.resize(roi,(256, 256))
+                        input_image = np.expand_dims(resized_roi, axis=0)
+                        result = model.predict(input_image)
+                        label_list.append(result[0])
+                        
+                    image_copy = np.copy(mp_image.numpy_view())
+                    label = labels_dict[int(result[0])]
+                    annotated_image = visualize(image_copy, results, label) #results -> detection_result
+                    frameST.image(annotated_image, channels='BGR', use_column_width=True) #annotated_image
+                
+                else:
+                    break
+
+            # 비디오 스트림 및 VideoWriter 리소스 해제
+            video_stream.release()
+            result = classify_data(label_list)
+            st.subheader("🔍 모델 감지 결과 : {}".format(str(result)))
+        
 
 if __name__ == '__main__':
     main()
